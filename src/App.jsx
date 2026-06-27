@@ -1,7 +1,7 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
-import { supabase } from "./supabase";
+import { supabase, supabaseConCodigo } from "./supabase";
 
 // ─── CONSTANTES ───────────────────────────────────────────────────────────────
 const ADMIN_CODIGO = "ADMIN2025";
@@ -10,10 +10,11 @@ const CAMPOS_HEADER = ["Vicaria", "Decanato", "Parroquia", "Sacerdote", "Lugar (
 
 const fila_vacia = () => ({ nombre: "", telefono: "", direccion: "", cantidad: "", h: "", m: "", mt: "" });
 
-async function cargarDatos() {
+// db: cliente de Supabase con header x-parroquia-codigo ya configurado
+async function cargarDatos(db) {
   const [{ data: parroquias }, { data: personas }] = await Promise.all([
-    supabase.from("parroquias").select("*"),
-    supabase.from("personas").select("*").order("posicion"),
+    db.from("parroquias").select("*"),
+    db.from("personas").select("*").order("posicion"),
   ]);
 
   const datos = {};
@@ -46,15 +47,15 @@ async function cargarDatos() {
   return { datos, parroquias: parroquias || [] };
 }
 
-async function guardarDatos(codigo, filas, header) {
-  await supabase.from("parroquias").update({
+async function guardarDatos(db, codigo, filas, header) {
+  await db.from("parroquias").update({
     sacerdote:         header["Sacerdote"]                   || "",
     lugar:             header["Lugar (municipio/localidad)"] || "",
     enlace_parroquial: header["Enlace parroquial"]           || "",
     telefono_contacto: header["Teléfono"]                    || "",
   }).eq("codigo", codigo);
 
-  await supabase.from("personas").delete().eq("parroquia_codigo", codigo);
+  await db.from("personas").delete().eq("parroquia_codigo", codigo);
 
   const rows = filas
     .map((f, i) => ({ ...f, parroquia_codigo: codigo, posicion: i }))
@@ -72,7 +73,7 @@ async function guardarDatos(codigo, filas, header) {
     }));
 
   if (rows.length > 0) {
-    await supabase.from("personas").insert(rows);
+    await db.from("personas").insert(rows);
   }
 }
 
@@ -132,13 +133,11 @@ async function exportarPDFParroquia(parroquia, header, filas) {
 
   pdfAddLogosYTitulo(doc, logoRCCES, logoDioc, "ENSES 2026 — Control de Hospedaje", "Diócesis Valle de Chalco");
 
-  // Nombre de parroquia
   doc.setFont("helvetica", "bold");
   doc.setFontSize(11);
   doc.setTextColor(26, 58, 107);
   doc.text(parroquia.nombre, 10, 37);
 
-  // Datos del header en dos columnas
   const infoFields = [
     ["Vicaria",    header["Vicaria"]],
     ["Decanato",   header["Decanato"]],
@@ -159,9 +158,7 @@ async function exportarPDFParroquia(parroquia, header, filas) {
     doc.text(label + ":", x, infoY + row * 5.5);
     doc.setFont("helvetica", "normal");
     doc.setTextColor(40);
-    const maxW = W / 2 - 15;
-    const truncated = doc.splitTextToSize(value || "", maxW)[0];
-    doc.text(truncated, x + 20, infoY + row * 5.5);
+    doc.text(doc.splitTextToSize(value || "", W / 2 - 15)[0], x + 20, infoY + row * 5.5);
   });
 
   const tableStartY = infoY + Math.ceil(infoFields.length / 2) * 5.5 + 5;
@@ -196,9 +193,9 @@ async function exportarPDFParroquia(parroquia, header, filas) {
     },
     didParseCell(data) {
       if (data.row.index === filasConDatos.length) {
-        data.cell.styles.fillColor    = [26, 58, 107];
-        data.cell.styles.textColor    = 255;
-        data.cell.styles.fontStyle    = "bold";
+        data.cell.styles.fillColor = [26, 58, 107];
+        data.cell.styles.textColor = 255;
+        data.cell.styles.fontStyle = "bold";
       }
     },
   });
@@ -214,7 +211,6 @@ async function exportarPDFGlobal(parroquias, datos) {
   ]);
 
   const doc = new jsPDF({ orientation: "portrait", unit: "mm", format: "letter" });
-
   pdfAddLogosYTitulo(doc, logoRCCES, logoDioc, "ENSES 2026 — Resumen General de Hospedaje", "Diócesis Valle de Chalco · Panel Administrador");
 
   const rows = parroquias.map(p => {
@@ -310,6 +306,12 @@ const IconPDF = () => (
     <line x1="16" y1="17" x2="8" y2="17"/>
   </svg>
 );
+const IconEye = () => (
+  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>
+);
 
 // ─── LOGOS ────────────────────────────────────────────────────────────────────
 const LogoRCCES = ({ size = 64 }) => (
@@ -331,17 +333,39 @@ function PantallaLogin({ onLogin }) {
     setError("");
     setCargando(true);
 
-    if (code === ADMIN_CODIGO) {
-      onLogin({ codigo: ADMIN_CODIGO, nombre: "ADMINISTRADOR GENERAL", esAdmin: true, cupo_maximo: 9999 });
+    // Acceso de solo lectura: VER-XXXX
+    const esVistaLectura = code.startsWith("VER-");
+    const codigoReal = esVistaLectura ? code.slice(4) : code;
+
+    if (codigoReal === ADMIN_CODIGO) {
+      onLogin({
+        codigo: ADMIN_CODIGO,
+        codigoReal: ADMIN_CODIGO,
+        codigoHeader: ADMIN_CODIGO,
+        nombre: "ADMINISTRADOR GENERAL",
+        esAdmin: true,
+        soloLectura: false,
+        cupo_maximo: 9999,
+      });
       setCargando(false);
       return;
     }
 
-    const { data } = await supabase.from("parroquias").select("*").eq("codigo", code).single();
+    const { data } = await supabase.from("parroquias").select("*").eq("codigo", codigoReal).single();
     if (data) {
-      onLogin({ ...data, esAdmin: false });
+      onLogin({
+        ...data,
+        codigoReal,
+        codigoHeader: codigoReal,
+        esAdmin: false,
+        soloLectura: esVistaLectura,
+      });
     } else {
-      setError("Código incorrecto. Verifica con el coordinador del evento.");
+      setError(
+        esVistaLectura
+          ? `No existe la parroquia "${codigoReal}". Verifica el código después de VER-.`
+          : "Código incorrecto. Verifica con el coordinador del evento."
+      );
     }
     setCargando(false);
   };
@@ -367,7 +391,7 @@ function PantallaLogin({ onLogin }) {
 
         <div style={{ borderTop: "1px solid #eee", paddingTop: 28 }}>
           <p style={{ color: "#444", fontSize: 14, marginBottom: 20, textAlign: "center" }}>
-            Ingresa el código único de tu parroquia para acceder.
+            Ingresa el código de tu parroquia para acceder.
           </p>
           <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#1A3A6B", marginBottom: 6, letterSpacing: 1 }}>
             CÓDIGO DE PARROQUIA
@@ -376,26 +400,33 @@ function PantallaLogin({ onLogin }) {
             value={codigo}
             onChange={e => setCodigo(e.target.value.toUpperCase())}
             onKeyDown={e => e.key === "Enter" && handleLogin()}
-            placeholder="Ej: SGDO001"
+            placeholder="Ej: SGDO001 · VER-SGDO001"
             style={{
-              width: "100%", padding: "12px 16px", fontSize: 16, fontFamily: "monospace",
+              width: "100%", padding: "12px 16px", fontSize: 15, fontFamily: "monospace",
               border: "2px solid #ddd", borderRadius: 8, outline: "none",
-              letterSpacing: 3, textAlign: "center", boxSizing: "border-box",
+              letterSpacing: 2, textAlign: "center", boxSizing: "border-box",
               transition: "border-color 0.2s"
             }}
             onFocus={e => e.target.style.borderColor = "#1A3A6B"}
             onBlur={e => e.target.style.borderColor = "#ddd"}
           />
+
+          {/* Hint VER- */}
+          <div style={{ marginTop: 8, fontSize: 11, color: "#888", textAlign: "center" }}>
+            Usa <strong>VER-CÓDIGO</strong> para acceso de solo lectura
+          </div>
+
           {error && (
             <div style={{ background: "#fff3f3", border: "1px solid #ffcccc", borderRadius: 6, padding: "10px 14px", marginTop: 12, color: "#cc0000", fontSize: 13 }}>
               {error}
             </div>
           )}
+
           <button
             onClick={handleLogin}
             disabled={!codigo || cargando}
             style={{
-              width: "100%", marginTop: 20, padding: "14px", fontSize: 15, fontWeight: 700,
+              width: "100%", marginTop: 18, padding: "14px", fontSize: 15, fontWeight: 700,
               background: codigo && !cargando ? "#1A3A6B" : "#9ba8c0",
               color: "white", border: "none", borderRadius: 8, cursor: codigo && !cargando ? "pointer" : "not-allowed",
               transition: "background 0.2s", letterSpacing: 0.5
@@ -409,10 +440,26 @@ function PantallaLogin({ onLogin }) {
   );
 }
 
+// ─── PANTALLA DE CARGA POST-LOGIN ─────────────────────────────────────────────
+function PantallaCargando() {
+  return (
+    <div style={{
+      minHeight: "100vh",
+      background: "linear-gradient(135deg, #0d2347 0%, #1A3A6B 50%, #2a5298 100%)",
+      display: "flex", alignItems: "center", justifyContent: "center",
+      fontFamily: "Inter, sans-serif", flexDirection: "column", gap: 16
+    }}>
+      <div style={{ width: 40, height: 40, border: "4px solid rgba(255,255,255,0.3)", borderTopColor: "white", borderRadius: "50%", animation: "spin 0.8s linear infinite" }}/>
+      <div style={{ color: "white", fontSize: 16 }}>Cargando datos...</div>
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+    </div>
+  );
+}
+
 // ─── VISTA ADMIN ──────────────────────────────────────────────────────────────
 const FORM_VACIO = { nombre: "", codigo: "", vicaria: "", decanato: "", cupo_maximo: "" };
 
-function VistaAdmin({ parroquias, datos, onLogout }) {
+function VistaAdmin({ parroquias, datos, db, onLogout }) {
   const isMobile = useIsMobile();
   const [tabActiva, setTabActiva] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -434,7 +481,7 @@ function VistaAdmin({ parroquias, datos, onLogout }) {
     }
     setErrForm("");
     setGuardando(true);
-    const { error } = await supabase.from("parroquias").insert({
+    const { error } = await db.from("parroquias").insert({
       nombre:      form.nombre.trim(),
       codigo:      form.codigo.trim().toUpperCase(),
       vicaria:     form.vicaria.trim(),
@@ -452,8 +499,8 @@ function VistaAdmin({ parroquias, datos, onLogout }) {
 
   const eliminarParroquia = async (codigo, nombre) => {
     if (!window.confirm(`¿Eliminar la parroquia "${nombre}" y todos sus registros?\n\nEsta acción no se puede deshacer.`)) return;
-    await supabase.from("personas").delete().eq("parroquia_codigo", codigo);
-    await supabase.from("parroquias").delete().eq("codigo", codigo);
+    await db.from("personas").delete().eq("parroquia_codigo", codigo);
+    await db.from("parroquias").delete().eq("codigo", codigo);
     if (tabActiva === codigo) setTabActiva(null);
   };
 
@@ -481,7 +528,6 @@ function VistaAdmin({ parroquias, datos, onLogout }) {
       {/* Header */}
       <div style={{ background: "#1A3A6B", color: "white" }}>
         <div style={{ maxWidth: 1100, margin: "0 auto", padding: isMobile ? "10px 14px" : "0 24px" }}>
-          {/* Fila superior: logo + título */}
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: isMobile ? "auto" : 64 }}>
             <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 10 : 16 }}>
               <LogoRCCES size={isMobile ? 40 : 52} />
@@ -490,13 +536,11 @@ function VistaAdmin({ parroquias, datos, onLogout }) {
                 <div style={{ fontSize: 11, opacity: 0.8 }}>Administrador · {parroquias.length} parroquias</div>
               </div>
             </div>
-            {/* Botón salir siempre visible */}
             <button onClick={onLogout} style={{ display:"flex", gap:5, alignItems:"center", background:"transparent", color:"white", border:"1px solid rgba(255,255,255,0.4)", padding:"7px 12px", borderRadius:6, cursor:"pointer", fontSize:12, whiteSpace:"nowrap" }}>
               <IconLogout/> {!isMobile && "Salir"}
             </button>
           </div>
-          {/* Botones de acción (segunda fila en móvil, inline en desktop) */}
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingBottom: isMobile ? 10 : 0, marginTop: isMobile ? 8 : -48, marginLeft: isMobile ? 0 : "auto", justifyContent: isMobile ? "stretch" : "flex-end", maxWidth: isMobile ? "none" : 560 }}>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingBottom: isMobile ? 10 : 0, marginTop: isMobile ? 8 : -48, marginLeft: isMobile ? 0 : "auto", justifyContent: isMobile ? "stretch" : "flex-end", maxWidth: isMobile ? "none" : 580 }}>
             <button onClick={() => { setForm(FORM_VACIO); setErrForm(""); setModalOpen(true); }} style={{ display:"flex", gap:5, alignItems:"center", justifyContent:"center", background:"#2a7a3a", color:"white", border:"none", padding:"8px 14px", borderRadius:6, cursor:"pointer", fontSize:12, fontWeight:600, flex: isMobile ? "1 1 calc(50% - 4px)" : "none" }}>
               <IconPlus/> Nueva parroquia
             </button>
@@ -511,15 +555,13 @@ function VistaAdmin({ parroquias, datos, onLogout }) {
       </div>
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: isMobile ? "14px 12px" : 24 }}>
-        {/* Tarjetas */}
         <div style={{ display:"grid", gridTemplateColumns: isMobile ? "1fr 1fr" : "repeat(4,1fr)", gap: isMobile ? 10 : 16, marginBottom: isMobile ? 16 : 28 }}>
-          <TarjetaStat label="Hospedados" valor={totalRegistrados}           color="#1A3A6B" small={isMobile}/>
-          <TarjetaStat label="Parroquias"  valor={parroquias.length}          color="#2a5298" small={isMobile}/>
-          <TarjetaStat label="Cupos total" valor={totalCupos}                 color="#8B0000" small={isMobile}/>
+          <TarjetaStat label="Hospedados"  valor={totalRegistrados}              color="#1A3A6B" small={isMobile}/>
+          <TarjetaStat label="Parroquias"  valor={parroquias.length}             color="#2a5298" small={isMobile}/>
+          <TarjetaStat label="Cupos total" valor={totalCupos}                    color="#8B0000" small={isMobile}/>
           <TarjetaStat label="Disponibles" valor={totalCupos - totalRegistrados} color="#2a7a3a" small={isMobile}/>
         </div>
 
-        {/* Tabla */}
         <div style={{ background:"white", borderRadius:12, overflow:"hidden", boxShadow:"0 2px 8px rgba(0,0,0,0.08)" }}>
           <div style={{ padding:"14px 16px", borderBottom:"1px solid #eee" }}>
             <h3 style={{ margin:0, color:"#1A3A6B", fontSize:15 }}>Estado por parroquia</h3>
@@ -587,7 +629,6 @@ function VistaAdmin({ parroquias, datos, onLogout }) {
           </div>
         </div>
 
-        {/* Vista expandida */}
         {tabActiva && (() => {
           const p = parroquias.find(x => x.codigo === tabActiva);
           if (!p) return null;
@@ -664,13 +705,13 @@ function TarjetaStat({ label, valor, color, small }) {
 // ─── TABLA DE PERSONAS ────────────────────────────────────────────────────────
 function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
   const cols = [
-    { key:"nombre",    label:"NOMBRE",             w:"20%" },
-    { key:"telefono",  label:"TELÉFONO",            w:"14%" },
-    { key:"direccion", label:"DIRECCIÓN",            w:"24%" },
-    { key:"cantidad",  label:"CANT.",               w:"10%" },
-    { key:"h",         label:"H",                   w:"7%" },
-    { key:"m",         label:"M",                   w:"7%" },
-    { key:"mt",        label:"MT",                  w:"7%" },
+    { key:"nombre",    label:"NOMBRE",    w:"20%" },
+    { key:"telefono",  label:"TELÉFONO",  w:"14%" },
+    { key:"direccion", label:"DIRECCIÓN", w:"24%" },
+    { key:"cantidad",  label:"CANT.",     w:"10%" },
+    { key:"h",         label:"H",         w:"7%"  },
+    { key:"m",         label:"M",         w:"7%"  },
+    { key:"mt",        label:"MT",        w:"7%"  },
   ];
 
   const totalPersonas = filas.reduce((s,f) => s+(parseInt(f.cantidad)||0), 0);
@@ -697,7 +738,7 @@ function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
               {cols.map(c => (
                 <td key={c.key} style={{ padding:"4px 5px", borderBottom:"1px solid #eef" }}>
                   {soloLectura ? (
-                    <span style={{ padding:"4px", display:"block" }}>{fila[c.key] || "—"}</span>
+                    <span style={{ padding:"4px", display:"block", color:"#333" }}>{fila[c.key] || "—"}</span>
                   ) : (
                     <input
                       value={fila[c.key]}
@@ -739,7 +780,7 @@ function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
 }
 
 // ─── VISTA PARROQUIA ──────────────────────────────────────────────────────────
-function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
+function VistaParroquia({ parroquia, datos, setDatos, db, soloLectura, onLogout }) {
   const isMobile = useIsMobile();
   const cupo = parroquia.cupo_maximo ?? parroquia.cupo ?? 0;
   const datosP = datos[parroquia.codigo] || { header: {}, filas: Array(20).fill(null).map(fila_vacia) };
@@ -755,14 +796,18 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
   const totalMT = filas.reduce((s,f) => s+(parseInt(f.mt)||0), 0);
   const pct = cupo > 0 ? Math.min(100, Math.round((totalPersonas/cupo)*100)) : 0;
 
-  const handleHeader = (campo, valor) => setHeader(h => ({ ...h, [campo]: valor }));
+  const handleHeader = (campo, valor) => {
+    if (soloLectura) return;
+    setHeader(h => ({ ...h, [campo]: valor }));
+  };
   const handleFila   = (i, campo, valor) => setFilas(fs => { const n = [...fs]; n[i] = { ...n[i], [campo]: valor }; return n; });
   const agregarFila  = () => setFilas(fs => [...fs, fila_vacia()]);
   const eliminarFila = (i) => setFilas(fs => fs.filter((_,idx) => idx !== i));
 
   const guardar = async () => {
+    if (soloLectura) return;
     setDatos(prev => ({ ...prev, [parroquia.codigo]: { header, filas } }));
-    await guardarDatos(parroquia.codigo, filas, header);
+    await guardarDatos(db, parroquia.codigo, filas, header);
     setGuardado(true);
     setTimeout(() => setGuardado(false), 2500);
   };
@@ -798,19 +843,27 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
 
   return (
     <div style={{ minHeight:"100vh", background:"#f0f4ff", fontFamily:"Inter, sans-serif" }}>
+      {/* Banner solo lectura */}
+      {soloLectura && (
+        <div style={{ background:"#7c4d00", color:"white", padding:"8px 20px", textAlign:"center", fontSize:13, display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}>
+          <IconEye/>
+          <span>Vista de <strong>solo lectura</strong> — los cambios no se guardan</span>
+        </div>
+      )}
+
       {/* Header */}
       <div style={{ background:"#1A3A6B", color:"white" }}>
         <div style={{ maxWidth:1000, margin:"0 auto", padding: isMobile ? "10px 14px" : "0 20px" }}>
           <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", minHeight: isMobile ? "auto" : 64 }}>
-            {/* Izquierda: logo + nombre */}
             <div style={{ display:"flex", alignItems:"center", gap: isMobile ? 10 : 14 }}>
               {!isMobile && <LogoRCCES size={48} />}
               <div>
-                <div style={{ fontSize: isMobile ? 13 : 17, fontWeight:700, fontFamily:"Georgia, serif" }}>ENSES 2026</div>
+                <div style={{ fontSize: isMobile ? 13 : 17, fontWeight:700, fontFamily:"Georgia, serif" }}>
+                  ENSES 2026{soloLectura ? " · Solo lectura" : ""}
+                </div>
                 <div style={{ fontSize: isMobile ? 11 : 12, opacity:0.8, maxWidth: isMobile ? 180 : "none", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{parroquia.nombre}</div>
               </div>
             </div>
-            {/* Derecha: indicador cupo + salir */}
             <div style={{ display:"flex", alignItems:"center", gap: isMobile ? 8 : 10 }}>
               <div style={{ textAlign:"right" }}>
                 <div style={{ fontSize: isMobile ? 10 : 12, opacity:0.7 }}>Cupo utilizado</div>
@@ -828,7 +881,6 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
               </button>
             </div>
           </div>
-          {/* Barra de progreso */}
           <div style={{ height:4, background:"rgba(255,255,255,0.15)", borderRadius:2, marginTop: isMobile ? 8 : 0 }}>
             <div style={{ width:`${pct}%`, height:"100%", background: pct>=90?"#ff6666":pct>=60?"#ffaa33":"#66cc88", borderRadius:2, transition:"width 0.5s" }}/>
           </div>
@@ -845,7 +897,6 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
               background: tab===id ? "#1A3A6B" : "white",
               color: tab===id ? "white" : "#1A3A6B",
               border: tab===id ? "none" : "2px solid #1A3A6B",
-              transition:"all 0.2s"
             }}>{label}</button>
           ))}
         </div>
@@ -860,8 +911,14 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
                   <input
                     value={header[campo]||""}
                     onChange={e => handleHeader(campo, e.target.value)}
-                    style={{ width:"100%", padding:"10px 12px", fontSize:14, border:"1.5px solid #ddd", borderRadius:7, outline:"none", boxSizing:"border-box", fontFamily:"Inter, sans-serif", transition:"border-color 0.2s" }}
-                    onFocus={e => e.target.style.borderColor="#1A3A6B"}
+                    readOnly={soloLectura}
+                    style={{
+                      width:"100%", padding:"10px 12px", fontSize:14, border:"1.5px solid #ddd", borderRadius:7, outline:"none",
+                      boxSizing:"border-box", fontFamily:"Inter, sans-serif", transition:"border-color 0.2s",
+                      background: soloLectura ? "#f8f9fc" : "white", color: soloLectura ? "#555" : "inherit",
+                      cursor: soloLectura ? "default" : "text",
+                    }}
+                    onFocus={e => { if (!soloLectura) e.target.style.borderColor="#1A3A6B"; }}
                     onBlur={e => e.target.style.borderColor="#ddd"}
                   />
                 </div>
@@ -879,19 +936,28 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
                   {filas.filter(f=>f.nombre).length} familias · {totalPersonas} personas ({totalH}H/{totalM}M/{totalMT}MT)
                 </p>
               </div>
-              <button onClick={agregarFila} style={{ display:"flex", gap:5, alignItems:"center", background:"#f0f4ff", color:"#1A3A6B", border:"1.5px solid #1A3A6B", padding: isMobile ? "7px 10px" : "8px 14px", borderRadius:6, cursor:"pointer", fontSize:12, fontWeight:600, whiteSpace:"nowrap" }}>
-                <IconAdd/> {isMobile ? "+" : "Agregar fila"}
-              </button>
+              {!soloLectura && (
+                <button onClick={agregarFila} style={{ display:"flex", gap:5, alignItems:"center", background:"#f0f4ff", color:"#1A3A6B", border:"1.5px solid #1A3A6B", padding: isMobile ? "7px 10px" : "8px 14px", borderRadius:6, cursor:"pointer", fontSize:12, fontWeight:600, whiteSpace:"nowrap" }}>
+                  <IconAdd/> {isMobile ? "+" : "Agregar fila"}
+                </button>
+              )}
             </div>
-            <TablaPersonas filas={filas} onChange={handleFila} onEliminar={eliminarFila} soloLectura={false} />
+            <TablaPersonas
+              filas={filas}
+              onChange={handleFila}
+              onEliminar={eliminarFila}
+              soloLectura={soloLectura}
+            />
           </div>
         )}
 
         {/* Barra de acciones */}
         <div style={{ display:"flex", gap:8, flexWrap:"wrap" }}>
-          <button onClick={guardar} style={{ display:"flex", gap:7, alignItems:"center", justifyContent:"center", background:"#1A3A6B", color:"white", border:"none", padding:"12px 20px", borderRadius:8, cursor:"pointer", fontSize:14, fontWeight:700, flex:"1 1 140px" }}>
-            <IconSave/> {guardado ? "✓ Guardado" : "Guardar"}
-          </button>
+          {!soloLectura && (
+            <button onClick={guardar} style={{ display:"flex", gap:7, alignItems:"center", justifyContent:"center", background:"#1A3A6B", color:"white", border:"none", padding:"12px 20px", borderRadius:8, cursor:"pointer", fontSize:14, fontWeight:700, flex:"1 1 140px" }}>
+              <IconSave/> {guardado ? "✓ Guardado" : "Guardar"}
+            </button>
+          )}
           <button onClick={exportarCSV} style={{ display:"flex", gap:7, alignItems:"center", justifyContent:"center", background:"white", color:"#1A3A6B", border:"2px solid #1A3A6B", padding:"12px 16px", borderRadius:8, cursor:"pointer", fontSize:14, fontWeight:600, flex:"1 1 100px" }}>
             <IconDownload/> CSV
           </button>
@@ -924,57 +990,79 @@ export default function App() {
   const [parroquiaActiva, setParroquiaActiva] = useState(null);
   const [parroquias, setParroquias]           = useState([]);
   const [datos, setDatos]                     = useState({});
-  const [iniciando, setIniciando]             = useState(true);
+  const [cargando, setCargando]               = useState(false);
+
+  // Cliente de Supabase con el header del usuario activo.
+  // Se recrea solo cuando cambia la sesión (login / logout).
+  const db = useMemo(
+    () => parroquiaActiva ? supabaseConCodigo(parroquiaActiva.codigoHeader) : null,
+    [parroquiaActiva]
+  );
 
   useEffect(() => {
-    cargarDatos().then(({ datos: d, parroquias: p }) => {
+    if (!parroquiaActiva || !db) return;
+
+    let montado = true;
+    setCargando(true);
+
+    cargarDatos(db).then(({ datos: d, parroquias: p }) => {
+      if (!montado) return;
       setDatos(d);
       setParroquias(p);
-      setIniciando(false);
+      setCargando(false);
     });
 
-    const actualizarTodo = () => cargarDatos().then(({ datos: d, parroquias: p }) => {
-      setDatos(d);
-      setParroquias(p);
-    });
+    const actualizarTodo = () => {
+      if (!montado) return;
+      cargarDatos(db).then(({ datos: d, parroquias: p }) => {
+        if (!montado) return;
+        setDatos(d);
+        setParroquias(p);
+      });
+    };
 
     const ch1 = supabase
       .channel("personas-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "personas" }, actualizarTodo)
       .subscribe();
-
     const ch2 = supabase
       .channel("parroquias-realtime")
       .on("postgres_changes", { event: "*", schema: "public", table: "parroquias" }, actualizarTodo)
       .subscribe();
 
     return () => {
+      montado = false;
       supabase.removeChannel(ch1);
       supabase.removeChannel(ch2);
     };
-  }, []);
+  }, [parroquiaActiva, db]);
 
-  if (iniciando) return (
-    <div style={{
-      minHeight: "100vh",
-      background: "linear-gradient(135deg, #0d2347 0%, #1A3A6B 50%, #2a5298 100%)",
-      display: "flex", alignItems: "center", justifyContent: "center",
-      fontFamily: "Inter, sans-serif", flexDirection: "column", gap: 16
-    }}>
-      <div style={{ width:40, height:40, border:"4px solid rgba(255,255,255,0.3)", borderTopColor:"white", borderRadius:"50%", animation:"spin 0.8s linear infinite" }}/>
-      <div style={{ color:"white", fontSize:16 }}>Cargando datos...</div>
-      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
-    </div>
-  );
+  const handleLogin = (p) => {
+    setParroquiaActiva(p);
+  };
 
-  return parroquiaActiva === null
-    ? <PantallaLogin onLogin={setParroquiaActiva} />
-    : parroquiaActiva.esAdmin
-      ? <VistaAdmin parroquias={parroquias} datos={datos} onLogout={() => setParroquiaActiva(null)} />
-      : <VistaParroquia
-          parroquia={parroquiaActiva}
-          datos={datos}
-          setDatos={setDatos}
-          onLogout={() => setParroquiaActiva(null)}
-        />;
+  const handleLogout = () => {
+    setParroquiaActiva(null);
+    setDatos({});
+    setParroquias([]);
+  };
+
+  if (!parroquiaActiva) return <PantallaLogin onLogin={handleLogin} />;
+  if (cargando)         return <PantallaCargando />;
+
+  return parroquiaActiva.esAdmin
+    ? <VistaAdmin
+        parroquias={parroquias}
+        datos={datos}
+        db={db}
+        onLogout={handleLogout}
+      />
+    : <VistaParroquia
+        parroquia={parroquiaActiva}
+        datos={datos}
+        setDatos={setDatos}
+        db={db}
+        soloLectura={parroquiaActiva.soloLectura}
+        onLogout={handleLogout}
+      />;
 }
