@@ -679,7 +679,7 @@ function VistaAdmin({ parroquias, datos, db, onLogout, recargar, esCoordinador =
                 </div>
               </div>
             </div>
-            <button onClick={onLogout} style={{ display:"flex", gap:5, alignItems:"center", background:"transparent", color:"white", border:"1px solid rgba(255,255,255,0.4)", padding:"7px 12px", borderRadius:6, cursor:"pointer", fontSize:12, whiteSpace:"nowrap" }}>
+            <button onClick={onLogout} style={{ display:"flex", gap:5, alignItems:"center", background:"transparent", color:"white", border:"1px solid rgba(255,255,255,0.4)", padding:"7px 12px", borderRadius:6, cursor:"pointer", fontSize:12, whiteSpace:"nowrap", position:"relative", zIndex:1 }}>
               <IconLogout/> {!isMobile && "Salir"}
             </button>
           </div>
