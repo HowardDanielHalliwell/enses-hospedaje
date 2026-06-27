@@ -328,14 +328,13 @@ function PantallaLogin({ onLogin }) {
       ...(bloqueadoHasta ? { desbloqueado_por: null } : {}),
     };
     if (bloqueadoHasta) {
-      const { data, error } = await supabase.from("bloqueos")
-        .upsert(payload, { onConflict: "navegador_id" });
-      console.log("[bloqueos] upsert:", { payload, data, error });
+      await supabase.from("bloqueos")
+        .upsert(payload, { onConflict: "navegador_id" })
+        .catch(() => {});
     } else {
       supabase.from("bloqueos")
         .upsert(payload, { onConflict: "navegador_id" })
-        .then(({ data, error }) => console.log("[bloqueos] fire:", { data, error }))
-        .catch(e => console.log("[bloqueos] error:", e));
+        .catch(() => {});
     }
     return intentos >= MAX_INTENTOS;
   };
