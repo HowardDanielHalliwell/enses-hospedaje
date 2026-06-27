@@ -380,7 +380,7 @@ function PantallaLogin({ onLogin }) {
         return;
       }
 
-      const { data } = await supabase.from("parroquias").select("*").eq("codigo", codigoReal).single();
+      const { data } = await supabase.from("parroquias").select("*").eq("codigo", codigoReal).maybeSingle();
       if (data) {
         localStorage.removeItem(BLOQUEO_KEY); setBloqueoLocalState(null);
         onLogin({ ...data, codigoReal, codigoHeader: codigoReal, esAdmin: false, soloLectura: esVistaLectura });
