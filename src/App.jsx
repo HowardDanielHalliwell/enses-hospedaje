@@ -8,7 +8,7 @@ const ADMIN_CODIGO = "ADMIN2025";
 
 const CAMPOS_HEADER = ["Vicaria", "Decanato", "Parroquia", "Sacerdote", "Lugar (municipio/localidad)", "Enlace parroquial", "Teléfono"];
 
-const fila_vacia = () => ({ nombre: "", telefono: "", direccion: "", cantidad: "", h: "", m: "", mt: "" });
+const fila_vacia = () => ({ nombre: "", telefono: "", direccion: "", cantidad: "", h: "", m: "", mt: "", agregado_por: "" });
 
 // db: cliente de Supabase con header x-parroquia-codigo ya configurado
 async function cargarDatos(db) {
@@ -29,6 +29,7 @@ async function cargarDatos(db) {
         h:         per.h         != null ? String(per.h)        : "",
         m:         per.m         != null ? String(per.m)        : "",
         mt:        per.mt        != null ? String(per.mt)       : "",
+        agregado_por: per.agregado_por || "",
       }));
 
     datos[p.codigo] = {
@@ -72,6 +73,26 @@ async function guardarDatos(db, codigo, filas, header) {
       mt:               f.mt       !== "" ? parseInt(f.mt)       : null,
     }));
 
+  if (rows.length > 0) {
+    await db.from("personas").insert(rows);
+  }
+}
+
+async function agregarPersonasCoordinador(db, parroquiaCodigo, filas, codigoCord) {
+  const rows = filas
+    .filter(f => f.nombre.trim())
+    .map((f, i) => ({
+      parroquia_codigo: parroquiaCodigo,
+      posicion:         Date.now() + i,
+      nombre:           f.nombre.trim(),
+      telefono:         f.telefono  || null,
+      direccion:        f.direccion || null,
+      cantidad:         f.cantidad !== "" ? parseInt(f.cantidad) : null,
+      h:                f.h        !== "" ? parseInt(f.h)        : null,
+      m:                f.m        !== "" ? parseInt(f.m)        : null,
+      mt:               f.mt       !== "" ? parseInt(f.mt)       : null,
+      agregado_por:     codigoCord,
+    }));
   if (rows.length > 0) {
     await db.from("personas").insert(rows);
   }
@@ -333,6 +354,31 @@ function PantallaLogin({ onLogin }) {
     setError("");
     setCargando(true);
 
+    // Coordinador: COORD-XXXX — validar contra tabla `coordinadores` en Supabase
+    if (code.startsWith("COORD-")) {
+      const { data: coord } = await supabase
+        .from("coordinadores")
+        .select("*")
+        .eq("codigo", code)
+        .single();
+      if (coord) {
+        onLogin({
+          codigo: coord.codigo,
+          codigoReal: coord.codigo,
+          codigoHeader: coord.codigo,
+          nombre: coord.nombre || `Coordinador ${code.slice(6)}`,
+          esAdmin: false,
+          esCoordinador: true,
+          soloLectura: false,
+          cupo_maximo: 0,
+        });
+      } else {
+        setError("Código de coordinador no válido. Verifica con el administrador.");
+      }
+      setCargando(false);
+      return;
+    }
+
     // Acceso de solo lectura: VER-XXXX
     const esVistaLectura = code.startsWith("VER-");
     const codigoReal = esVistaLectura ? code.slice(4) : code;
@@ -411,9 +457,8 @@ function PantallaLogin({ onLogin }) {
             onBlur={e => e.target.style.borderColor = "#ddd"}
           />
 
-          {/* Hint VER- */}
-          <div style={{ marginTop: 8, fontSize: 11, color: "#888", textAlign: "center" }}>
-            Usa <strong>VER-CÓDIGO</strong> para acceso de solo lectura
+          <div style={{ marginTop: 8, fontSize: 11, color: "#888", textAlign: "center", lineHeight: 1.6 }}>
+            <strong>VER-CÓDIGO</strong> — solo lectura &nbsp;·&nbsp; <strong>COORD-NOMBRE</strong> — coordinador
           </div>
 
           {error && (
@@ -459,14 +504,22 @@ function PantallaCargando() {
 // ─── VISTA ADMIN ──────────────────────────────────────────────────────────────
 const FORM_VACIO = { nombre: "", codigo: "", vicaria: "", decanato: "", cupo_maximo: "" };
 
-function VistaAdmin({ parroquias, datos, db, onLogout }) {
+function VistaAdmin({ parroquias, datos, db, onLogout, esCoordinador = false, coordinadorCodigo = "" }) {
   const isMobile = useIsMobile();
-  const [tabActiva, setTabActiva] = useState(null);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [form, setForm]           = useState(FORM_VACIO);
-  const [guardando, setGuardando] = useState(false);
-  const [errForm, setErrForm]     = useState("");
-  const [genPDF, setGenPDF]       = useState(false);
+  const [tabActiva, setTabActiva]         = useState(null);
+  const [modalOpen, setModalOpen]         = useState(false);
+  const [form, setForm]                   = useState(FORM_VACIO);
+  const [guardando, setGuardando]         = useState(false);
+  const [errForm, setErrForm]             = useState("");
+  const [genPDF, setGenPDF]               = useState(false);
+  const [nuevasFilas, setNuevasFilas]     = useState([]);
+  const [guardandoNuevas, setGuardandoNuevas] = useState(false);
+  const [guardadoNuevasOk, setGuardadoNuevasOk] = useState(false);
+
+  useEffect(() => {
+    setNuevasFilas([]);
+    setGuardadoNuevasOk(false);
+  }, [tabActiva]);
 
   const totalRegistrados = parroquias.reduce((acc, p) => {
     const filas = datos[p.codigo]?.filas || [];
@@ -533,7 +586,9 @@ function VistaAdmin({ parroquias, datos, db, onLogout }) {
               <LogoRCCES size={isMobile ? 40 : 52} />
               <div>
                 <div style={{ fontSize: isMobile ? 14 : 18, fontWeight: 700, fontFamily: "Georgia, serif" }}>ENSES 2026 — Panel General</div>
-                <div style={{ fontSize: 11, opacity: 0.8 }}>Administrador · {parroquias.length} parroquias</div>
+                <div style={{ fontSize: 11, opacity: 0.8 }}>
+                  {esCoordinador ? `Coordinador ${coordinadorCodigo}` : "Administrador"} · {parroquias.length} parroquias
+                </div>
               </div>
             </div>
             <button onClick={onLogout} style={{ display:"flex", gap:5, alignItems:"center", background:"transparent", color:"white", border:"1px solid rgba(255,255,255,0.4)", padding:"7px 12px", borderRadius:6, cursor:"pointer", fontSize:12, whiteSpace:"nowrap" }}>
@@ -541,15 +596,19 @@ function VistaAdmin({ parroquias, datos, db, onLogout }) {
             </button>
           </div>
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap", paddingBottom: isMobile ? 10 : 0, marginTop: isMobile ? 8 : -48, marginLeft: isMobile ? 0 : "auto", justifyContent: isMobile ? "stretch" : "flex-end", maxWidth: isMobile ? "none" : 580 }}>
-            <button onClick={() => { setForm(FORM_VACIO); setErrForm(""); setModalOpen(true); }} style={{ display:"flex", gap:5, alignItems:"center", justifyContent:"center", background:"#2a7a3a", color:"white", border:"none", padding:"8px 14px", borderRadius:6, cursor:"pointer", fontSize:12, fontWeight:600, flex: isMobile ? "1 1 calc(50% - 4px)" : "none" }}>
-              <IconPlus/> Nueva parroquia
-            </button>
+            {!esCoordinador && (
+              <button onClick={() => { setForm(FORM_VACIO); setErrForm(""); setModalOpen(true); }} style={{ display:"flex", gap:5, alignItems:"center", justifyContent:"center", background:"#2a7a3a", color:"white", border:"none", padding:"8px 14px", borderRadius:6, cursor:"pointer", fontSize:12, fontWeight:600, flex: isMobile ? "1 1 calc(50% - 4px)" : "none" }}>
+                <IconPlus/> Nueva parroquia
+              </button>
+            )}
             <button onClick={exportarCSV} style={{ display:"flex", gap:5, alignItems:"center", justifyContent:"center", background:"#2a5298", color:"white", border:"none", padding:"8px 14px", borderRadius:6, cursor:"pointer", fontSize:12, flex: isMobile ? "1 1 calc(50% - 4px)" : "none" }}>
               <IconDownload/> CSV
             </button>
-            <button onClick={handlePDFGlobal} disabled={genPDF} style={{ display:"flex", gap:5, alignItems:"center", justifyContent:"center", background: genPDF ? "#666" : "#8B0000", color:"white", border:"none", padding:"8px 14px", borderRadius:6, cursor: genPDF ? "not-allowed" : "pointer", fontSize:12, flex: isMobile ? "1 1 100%" : "none" }}>
-              <IconPDF/> {genPDF ? "Generando..." : "Exportar PDF global"}
-            </button>
+            {!esCoordinador && (
+              <button onClick={handlePDFGlobal} disabled={genPDF} style={{ display:"flex", gap:5, alignItems:"center", justifyContent:"center", background: genPDF ? "#666" : "#8B0000", color:"white", border:"none", padding:"8px 14px", borderRadius:6, cursor: genPDF ? "not-allowed" : "pointer", fontSize:12, flex: isMobile ? "1 1 100%" : "none" }}>
+                <IconPDF/> {genPDF ? "Generando..." : "Exportar PDF global"}
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -570,7 +629,7 @@ function VistaAdmin({ parroquias, datos, db, onLogout }) {
             <table style={{ width:"100%", borderCollapse:"collapse", fontSize: isMobile ? 12 : 14, minWidth: 600 }}>
               <thead>
                 <tr style={{ background:"#f8f9fc" }}>
-                  {["Parroquia","Decanato","Vicaría","Reg.","Cupo","Disp.","Llenado",""].map(h => (
+                  {["Parroquia","Decanato","Vicaría","Reg.","Cupo","Disp.","Llenado", ...(esCoordinador ? [] : [""])].map(h => (
                     <th key={h} style={{ padding:"9px 10px", textAlign:"left", color:"#444", fontWeight:600, borderBottom:"1px solid #eee", whiteSpace:"nowrap" }}>{h}</th>
                   ))}
                 </tr>
@@ -603,17 +662,19 @@ function VistaAdmin({ parroquias, datos, db, onLogout }) {
                           <span style={{ color, fontSize:11, fontWeight:700, minWidth:32 }}>{pct}%</span>
                         </div>
                       </td>
-                      <td style={{ padding:"4px 8px", textAlign:"center" }}>
-                        <button
-                          onClick={() => eliminarParroquia(p.codigo, p.nombre)}
-                          title="Eliminar parroquia"
-                          style={{ background:"none", border:"none", cursor:"pointer", color:"#ccc", padding:5, borderRadius:4, display:"flex", alignItems:"center" }}
-                          onMouseEnter={e => { e.currentTarget.style.color="#cc0000"; e.currentTarget.style.background="#fff0f0"; }}
-                          onMouseLeave={e => { e.currentTarget.style.color="#ccc"; e.currentTarget.style.background="none"; }}
-                        >
-                          <IconTrash/>
-                        </button>
-                      </td>
+                      {!esCoordinador && (
+                        <td style={{ padding:"4px 8px", textAlign:"center" }}>
+                          <button
+                            onClick={() => eliminarParroquia(p.codigo, p.nombre)}
+                            title="Eliminar parroquia"
+                            style={{ background:"none", border:"none", cursor:"pointer", color:"#ccc", padding:5, borderRadius:4, display:"flex", alignItems:"center" }}
+                            onMouseEnter={e => { e.currentTarget.style.color="#cc0000"; e.currentTarget.style.background="#fff0f0"; }}
+                            onMouseLeave={e => { e.currentTarget.style.color="#ccc"; e.currentTarget.style.background="none"; }}
+                          >
+                            <IconTrash/>
+                          </button>
+                        </td>
+                      )}
                     </tr>
                   );
                 })}
@@ -633,13 +694,93 @@ function VistaAdmin({ parroquias, datos, db, onLogout }) {
           const p = parroquias.find(x => x.codigo === tabActiva);
           if (!p) return null;
           const filas = datos[tabActiva]?.filas || [];
+          const headerP = datos[tabActiva]?.header || {};
+
+          const exportarCSVParroquia = () => {
+            let csv = `ENSES 2026 - Control de Hospedaje\nParroquia:,${p.nombre}\n\nP.,NOMBRE,TELÉFONO,DIRECCIÓN,CANTIDAD,H,M,MT,AGREGADO POR\n`;
+            filas.forEach((f, i) => {
+              if (f.nombre) csv += `${i+1},"${f.nombre}","${f.telefono}","${f.direccion}","${f.cantidad}","${f.h}","${f.m}","${f.mt}","${f.agregado_por}"\n`;
+            });
+            const blob = new Blob(["﻿"+csv], { type:"text/csv;charset=utf-8;" });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a"); a.href=url; a.download=`ENSES_${p.nombre.replace(/\s+/g,"_")}.csv`; a.click();
+          };
+
+          const handlePDFParroquia = async () => {
+            setGenPDF(true);
+            await exportarPDFParroquia(p, headerP, filas);
+            setGenPDF(false);
+          };
+
+          const guardarNuevasPersonas = async () => {
+            const conNombre = nuevasFilas.filter(f => f.nombre.trim());
+            if (!conNombre.length) return;
+            setGuardandoNuevas(true);
+            await agregarPersonasCoordinador(db, tabActiva, conNombre, coordinadorCodigo);
+            setGuardandoNuevas(false);
+            setNuevasFilas([]);
+            setGuardadoNuevasOk(true);
+            setTimeout(() => setGuardadoNuevasOk(false), 3000);
+          };
+
           return (
             <div style={{ marginTop:14, background:"white", borderRadius:12, padding: isMobile ? 14 : 20, boxShadow:"0 2px 8px rgba(0,0,0,0.08)" }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:14 }}>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", flexWrap:"wrap", gap:8, marginBottom:14 }}>
                 <h4 style={{ margin:0, color:"#1A3A6B", fontSize: isMobile ? 13 : 15 }}>Detalle: {p.nombre}</h4>
-                <button onClick={() => setTabActiva(null)} style={{ background:"none", border:"1px solid #ddd", borderRadius:6, padding:"4px 10px", cursor:"pointer", fontSize:12, color:"#666" }}>Cerrar</button>
+                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
+                  <button onClick={exportarCSVParroquia} style={{ display:"flex", gap:5, alignItems:"center", background:"#f0f4ff", color:"#1A3A6B", border:"1.5px solid #1A3A6B", padding:"6px 12px", borderRadius:6, cursor:"pointer", fontSize:12 }}>
+                    <IconDownload/> CSV
+                  </button>
+                  <button onClick={handlePDFParroquia} disabled={genPDF} style={{ display:"flex", gap:5, alignItems:"center", background: genPDF ? "#bbb" : "#8B0000", color:"white", border:"none", padding:"6px 12px", borderRadius:6, cursor: genPDF ? "not-allowed" : "pointer", fontSize:12 }}>
+                    <IconPDF/> PDF
+                  </button>
+                  <button onClick={() => setTabActiva(null)} style={{ background:"none", border:"1px solid #ddd", borderRadius:6, padding:"6px 10px", cursor:"pointer", fontSize:12, color:"#666" }}>Cerrar</button>
+                </div>
               </div>
-              <TablaPersonas filas={filas} soloLectura={true} />
+
+              <TablaPersonas filas={filas} soloLectura={true} mostrarAgregadoPor={true} />
+
+              {/* Sección para agregar personas (solo coordinador) */}
+              {esCoordinador && (
+                <div style={{ marginTop:20, borderTop:"2px dashed #c8d8f8", paddingTop:16 }}>
+                  <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:12 }}>
+                    <div>
+                      <h5 style={{ margin:0, color:"#1A3A6B", fontSize:13 }}>Agregar personas</h5>
+                      <span style={{ fontSize:11, color:"#888" }}>Se registrarán con código: <strong>{coordinadorCodigo}</strong></span>
+                    </div>
+                    <button
+                      onClick={() => setNuevasFilas(fs => [...fs, fila_vacia()])}
+                      style={{ display:"flex", gap:5, alignItems:"center", background:"#f0f4ff", color:"#1A3A6B", border:"1.5px solid #1A3A6B", padding:"7px 12px", borderRadius:6, cursor:"pointer", fontSize:12, fontWeight:600 }}
+                    >
+                      <IconPlus/> Agregar persona
+                    </button>
+                  </div>
+
+                  {nuevasFilas.length > 0 && (
+                    <>
+                      <TablaPersonas
+                        filas={nuevasFilas}
+                        onChange={(i, campo, valor) => setNuevasFilas(fs => { const n=[...fs]; n[i]={...n[i],[campo]:valor}; return n; })}
+                        onEliminar={i => setNuevasFilas(fs => fs.filter((_,idx)=>idx!==i))}
+                        soloLectura={false}
+                        mostrarAgregadoPor={false}
+                      />
+                      <div style={{ marginTop:12, display:"flex", gap:8, alignItems:"center" }}>
+                        <button
+                          onClick={guardarNuevasPersonas}
+                          disabled={guardandoNuevas}
+                          style={{ display:"flex", gap:6, alignItems:"center", background: guardandoNuevas ? "#9ba8c0" : "#1A3A6B", color:"white", border:"none", padding:"10px 18px", borderRadius:8, cursor: guardandoNuevas ? "not-allowed" : "pointer", fontSize:13, fontWeight:700 }}
+                        >
+                          <IconSave/> {guardandoNuevas ? "Guardando..." : "Guardar nuevas personas"}
+                        </button>
+                        {guardadoNuevasOk && (
+                          <span style={{ color:"#2a7a3a", fontSize:13, fontWeight:600 }}>✓ Guardado correctamente</span>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
             </div>
           );
         })()}
@@ -703,15 +844,16 @@ function TarjetaStat({ label, valor, color, small }) {
 }
 
 // ─── TABLA DE PERSONAS ────────────────────────────────────────────────────────
-function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
+function TablaPersonas({ filas, onChange, soloLectura, onEliminar, mostrarAgregadoPor = false }) {
   const cols = [
     { key:"nombre",    label:"NOMBRE",    w:"20%" },
     { key:"telefono",  label:"TELÉFONO",  w:"14%" },
-    { key:"direccion", label:"DIRECCIÓN", w:"24%" },
-    { key:"cantidad",  label:"CANT.",     w:"10%" },
-    { key:"h",         label:"H",         w:"7%"  },
-    { key:"m",         label:"M",         w:"7%"  },
-    { key:"mt",        label:"MT",        w:"7%"  },
+    { key:"direccion", label:"DIRECCIÓN", w:"22%" },
+    { key:"cantidad",  label:"CANT.",     w:"8%"  },
+    { key:"h",         label:"H",         w:"6%"  },
+    { key:"m",         label:"M",         w:"6%"  },
+    { key:"mt",        label:"MT",        w:"6%"  },
+    ...(mostrarAgregadoPor ? [{ key:"agregado_por", label:"AGREGADO POR", w:"13%" }] : []),
   ];
 
   const totalPersonas = filas.reduce((s,f) => s+(parseInt(f.cantidad)||0), 0);
@@ -721,7 +863,7 @@ function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
 
   return (
     <div style={{ overflowX:"auto", WebkitOverflowScrolling:"touch" }}>
-      <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13, minWidth: 560 }}>
+      <table style={{ width:"100%", borderCollapse:"collapse", fontSize:13, minWidth: mostrarAgregadoPor ? 660 : 560 }}>
         <thead>
           <tr style={{ background:"#1A3A6B" }}>
             <th style={{ padding:"9px 7px", color:"white", width:"4%", textAlign:"center" }}>P.</th>
@@ -737,8 +879,13 @@ function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
               <td style={{ padding:"6px 7px", textAlign:"center", color:"#888", fontSize:12, borderBottom:"1px solid #eef" }}>{i+1}</td>
               {cols.map(c => (
                 <td key={c.key} style={{ padding:"4px 5px", borderBottom:"1px solid #eef" }}>
-                  {soloLectura ? (
-                    <span style={{ padding:"4px", display:"block", color:"#333" }}>{fila[c.key] || "—"}</span>
+                  {soloLectura || c.key === "agregado_por" ? (
+                    <span style={{
+                      padding:"4px", display:"block", color: c.key === "agregado_por" && fila[c.key] ? "#2a5298" : "#333",
+                      fontSize: c.key === "agregado_por" ? 11 : 13, fontStyle: c.key === "agregado_por" && !fila[c.key] ? "italic" : "normal"
+                    }}>
+                      {fila[c.key] || "—"}
+                    </span>
                   ) : (
                     <input
                       value={fila[c.key]}
@@ -771,6 +918,7 @@ function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
             <td style={{ padding:"9px 7px", color:"#1A3A6B", borderTop:"2px solid #1A3A6B" }}>{totalH}</td>
             <td style={{ padding:"9px 7px", color:"#1A3A6B", borderTop:"2px solid #1A3A6B" }}>{totalM}</td>
             <td style={{ padding:"9px 7px", color:"#1A3A6B", borderTop:"2px solid #1A3A6B" }}>{totalMT}</td>
+            {mostrarAgregadoPor && <td style={{ borderTop:"2px solid #1A3A6B" }}/>}
             {!soloLectura && <td style={{ borderTop:"2px solid #1A3A6B" }}/>}
           </tr>
         </tfoot>
@@ -1050,19 +1198,27 @@ export default function App() {
   if (!parroquiaActiva) return <PantallaLogin onLogin={handleLogin} />;
   if (cargando)         return <PantallaCargando />;
 
-  return parroquiaActiva.esAdmin
-    ? <VistaAdmin
+  if (parroquiaActiva.esAdmin || parroquiaActiva.esCoordinador) {
+    return (
+      <VistaAdmin
         parroquias={parroquias}
         datos={datos}
         db={db}
         onLogout={handleLogout}
+        esCoordinador={parroquiaActiva.esCoordinador ?? false}
+        coordinadorCodigo={parroquiaActiva.codigo ?? ""}
       />
-    : <VistaParroquia
-        parroquia={parroquiaActiva}
-        datos={datos}
-        setDatos={setDatos}
-        db={db}
-        soloLectura={parroquiaActiva.soloLectura}
-        onLogout={handleLogout}
-      />;
+    );
+  }
+
+  return (
+    <VistaParroquia
+      parroquia={parroquiaActiva}
+      datos={datos}
+      setDatos={setDatos}
+      db={db}
+      soloLectura={parroquiaActiva.soloLectura}
+      onLogout={handleLogout}
+    />
+  );
 }
