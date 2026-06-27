@@ -1,14 +1,8 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { supabase } from "./supabase";
 
-// ─── DATOS DE DEMO ────────────────────────────────────────────────────────────
-const PARROQUIAS_DEMO = [
-  { codigo: "ADMIN2025", nombre: "ADMINISTRADOR GENERAL", esAdmin: true, cupo: 9999, decanato: "Todos", vicaria: "Todas" },
-  { codigo: "SGDO001",   nombre: "Sagrado Corazón de Jesús", esAdmin: false, cupo: 100, decanato: "Decanato I", vicaria: "Vicaría Norte" },
-  { codigo: "GRDL002",   nombre: "Nuestra Señora de Guadalupe", esAdmin: false, cupo: 150, decanato: "Decanato II", vicaria: "Vicaría Sur" },
-  { codigo: "SNJN003",   nombre: "San Juan Diego", esAdmin: false, cupo: 200, decanato: "Decanato III", vicaria: "Vicaría Centro" },
-  { codigo: "SNJP004",   nombre: "San José Obrero", esAdmin: false, cupo: 100, decanato: "Decanato I", vicaria: "Vicaría Norte" },
-];
+// ─── CONSTANTES ───────────────────────────────────────────────────────────────
+const ADMIN_CODIGO = "ADMIN2025";
 
 const CAMPOS_HEADER = ["Vicaria", "Decanato", "Parroquia", "Sacerdote", "Lugar (municipio/localidad)", "Enlace parroquial", "Teléfono"];
 
@@ -47,7 +41,7 @@ async function cargarDatos() {
       filas: filasP.length > 0 ? filasP : Array(20).fill(null).map(fila_vacia),
     };
   }
-  return datos;
+  return { datos, parroquias: parroquias || [] };
 }
 
 async function guardarDatos(codigo, filas, header) {
@@ -106,12 +100,16 @@ const IconTrash = () => (
     <polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14H6L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M9 6V4h6v2"/>
   </svg>
 );
+const IconPlus = () => (
+  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+    <line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/>
+  </svg>
+);
 
-// ─── LOGOS (SVG embebidos simplificados) ─────────────────────────────────────
+// ─── LOGOS ────────────────────────────────────────────────────────────────────
 const LogoRCCES = () => (
   <img src="/Valle de Chalco RCCES.png" width={64} height={64} style={{ borderRadius: "50%", flexShrink: 0 }} alt="RCCES Valle de Chalco" />
 );
-
 const LogoDiocesis = () => (
   <img src="/Diocesis Valle de Chalco.png" width={64} height={64} style={{ borderRadius: "50%", flexShrink: 0 }} alt="Diócesis Valle de Chalco" />
 );
@@ -122,15 +120,25 @@ function PantallaLogin({ onLogin }) {
   const [error, setError] = useState("");
   const [cargando, setCargando] = useState(false);
 
-  const handleLogin = () => {
+  const handleLogin = async () => {
+    const code = codigo.trim().toUpperCase();
+    if (!code) return;
     setError("");
     setCargando(true);
-    setTimeout(() => {
-      const p = PARROQUIAS_DEMO.find(p => p.codigo === codigo.trim().toUpperCase());
-      if (p) { onLogin(p); }
-      else { setError("Código incorrecto. Verifica con el coordinador del evento."); }
+
+    if (code === ADMIN_CODIGO) {
+      onLogin({ codigo: ADMIN_CODIGO, nombre: "ADMINISTRADOR GENERAL", esAdmin: true, cupo_maximo: 9999 });
       setCargando(false);
-    }, 600);
+      return;
+    }
+
+    const { data } = await supabase.from("parroquias").select("*").eq("codigo", code).single();
+    if (data) {
+      onLogin({ ...data, esAdmin: false });
+    } else {
+      setError("Código incorrecto. Verifica con el coordinador del evento.");
+    }
+    setCargando(false);
   };
 
   return (
@@ -142,7 +150,6 @@ function PantallaLogin({ onLogin }) {
         background: "white", borderRadius: 16, padding: "48px 40px",
         width: "100%", maxWidth: 420, boxShadow: "0 25px 60px rgba(0,0,0,0.4)"
       }}>
-        {/* Logos */}
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 32 }}>
           <LogoRCCES />
           <div style={{ textAlign: "center", flex: 1, padding: "0 12px" }}>
@@ -194,12 +201,6 @@ function PantallaLogin({ onLogin }) {
           >
             {cargando ? "Verificando..." : "Acceder"}
           </button>
-
-          <div style={{ marginTop: 24, padding: "12px 16px", background: "#f0f4ff", borderRadius: 8, fontSize: 12, color: "#444" }}>
-            <strong>Códigos de demo:</strong><br/>
-            SGDO001 · GRDL002 · SNJN003 · SNJP004<br/>
-            <span style={{ color: "#8B0000" }}>Admin: ADMIN2025</span>
-          </div>
         </div>
       </div>
     </div>
@@ -207,14 +208,50 @@ function PantallaLogin({ onLogin }) {
 }
 
 // ─── VISTA ADMIN ──────────────────────────────────────────────────────────────
-function VistaAdmin({ datos, onLogout }) {
-  const [tabActiva, setTabActiva] = useState(null);
-  const parroquias = PARROQUIAS_DEMO.filter(p => !p.esAdmin);
+const FORM_VACIO = { nombre: "", codigo: "", vicaria: "", decanato: "", cupo_maximo: "" };
 
-  const totalGeneral = parroquias.reduce((acc, p) => {
+function VistaAdmin({ parroquias, datos, onLogout }) {
+  const [tabActiva, setTabActiva]   = useState(null);
+  const [modalOpen, setModalOpen]   = useState(false);
+  const [form, setForm]             = useState(FORM_VACIO);
+  const [guardando, setGuardando]   = useState(false);
+  const [errForm, setErrForm]       = useState("");
+
+  const totalRegistrados = parroquias.reduce((acc, p) => {
     const filas = datos[p.codigo]?.filas || [];
     return acc + filas.reduce((s, f) => s + (parseInt(f.cantidad) || 0), 0);
   }, 0);
+  const totalCupos = parroquias.reduce((a, p) => a + (p.cupo_maximo || 0), 0);
+
+  const crearParroquia = async () => {
+    if (!form.nombre.trim() || !form.codigo.trim()) {
+      setErrForm("Nombre y Código son obligatorios.");
+      return;
+    }
+    setErrForm("");
+    setGuardando(true);
+    const { error } = await supabase.from("parroquias").insert({
+      nombre:      form.nombre.trim(),
+      codigo:      form.codigo.trim().toUpperCase(),
+      vicaria:     form.vicaria.trim(),
+      decanato:    form.decanato.trim(),
+      cupo_maximo: parseInt(form.cupo_maximo) || 0,
+    });
+    setGuardando(false);
+    if (error) {
+      setErrForm(error.message);
+    } else {
+      setModalOpen(false);
+      setForm(FORM_VACIO);
+    }
+  };
+
+  const eliminarParroquia = async (codigo, nombre) => {
+    if (!window.confirm(`¿Eliminar la parroquia "${nombre}" y todos sus registros?\n\nEsta acción no se puede deshacer.`)) return;
+    await supabase.from("personas").delete().eq("parroquia_codigo", codigo);
+    await supabase.from("parroquias").delete().eq("codigo", codigo);
+    if (tabActiva === codigo) setTabActiva(null);
+  };
 
   const exportarCSV = () => {
     let csv = "Parroquia,Nombre,Teléfono,Dirección,Cantidad,H,M,MT\n";
@@ -242,6 +279,9 @@ function VistaAdmin({ datos, onLogout }) {
             </div>
           </div>
           <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+            <button onClick={() => { setForm(FORM_VACIO); setErrForm(""); setModalOpen(true); }} style={{ display:"flex", gap:6, alignItems:"center", background:"#2a7a3a", color:"white", border:"none", padding:"8px 16px", borderRadius:6, cursor:"pointer", fontSize:13, fontWeight:600 }}>
+              <IconPlus/> Nueva parroquia
+            </button>
             <button onClick={exportarCSV} style={{ display:"flex", gap:6, alignItems:"center", background:"#2a5298", color:"white", border:"none", padding:"8px 16px", borderRadius:6, cursor:"pointer", fontSize:13 }}>
               <IconDownload/> Exportar todo (CSV)
             </button>
@@ -253,12 +293,12 @@ function VistaAdmin({ datos, onLogout }) {
       </div>
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: 24 }}>
-        {/* Resumen */}
+        {/* Tarjetas de resumen */}
         <div style={{ display:"grid", gridTemplateColumns:"repeat(auto-fit,minmax(220px,1fr))", gap:16, marginBottom:28 }}>
-          <TarjetaStat label="Total hospedados registrados" valor={totalGeneral} color="#1A3A6B"/>
+          <TarjetaStat label="Total hospedados registrados" valor={totalRegistrados} color="#1A3A6B"/>
           <TarjetaStat label="Parroquias participantes" valor={parroquias.length} color="#2a5298"/>
-          <TarjetaStat label="Cupos totales disponibles" valor={parroquias.reduce((a,p)=>a+p.cupo,0)} color="#8B0000"/>
-          <TarjetaStat label="Cupos disponibles restantes" valor={parroquias.reduce((a,p)=>a+p.cupo,0) - totalGeneral} color="#2a7a3a"/>
+          <TarjetaStat label="Cupos totales disponibles" valor={totalCupos} color="#8B0000"/>
+          <TarjetaStat label="Cupos disponibles restantes" valor={totalCupos - totalRegistrados} color="#2a7a3a"/>
         </div>
 
         {/* Tabla por parroquia */}
@@ -269,7 +309,7 @@ function VistaAdmin({ datos, onLogout }) {
           <table style={{ width:"100%", borderCollapse:"collapse", fontSize:14 }}>
             <thead>
               <tr style={{ background:"#f8f9fc" }}>
-                {["Parroquia","Decanato","Vicaría","Registrados","Cupo máx.","Disponibles","Llenado"].map(h => (
+                {["Parroquia","Decanato","Vicaría","Registrados","Cupo máx.","Disponibles","Llenado",""].map(h => (
                   <th key={h} style={{ padding:"10px 14px", textAlign:"left", color:"#444", fontWeight:600, borderBottom:"1px solid #eee", whiteSpace:"nowrap" }}>{h}</th>
                 ))}
               </tr>
@@ -278,19 +318,22 @@ function VistaAdmin({ datos, onLogout }) {
               {parroquias.map(p => {
                 const filas = datos[p.codigo]?.filas || [];
                 const reg = filas.reduce((s,f) => s+(parseInt(f.cantidad)||0), 0);
-                const pct = Math.min(100, Math.round((reg/p.cupo)*100));
+                const cupo = p.cupo_maximo || 0;
+                const pct = cupo > 0 ? Math.min(100, Math.round((reg/cupo)*100)) : 0;
                 const color = pct >= 90 ? "#cc0000" : pct >= 60 ? "#e07b00" : "#2a7a3a";
                 return (
-                  <tr key={p.codigo} style={{ borderBottom:"1px solid #f0f0f0", cursor:"pointer" }}
-                    onClick={() => setTabActiva(tabActiva === p.codigo ? null : p.codigo)}
-                    onMouseEnter={e => e.currentTarget.style.background="#f8f9ff"}
-                    onMouseLeave={e => e.currentTarget.style.background="white"}>
-                    <td style={{ padding:"10px 14px", fontWeight:600, color:"#1A3A6B" }}>{p.nombre}</td>
-                    <td style={{ padding:"10px 14px", color:"#555" }}>{p.decanato}</td>
-                    <td style={{ padding:"10px 14px", color:"#555" }}>{p.vicaria}</td>
+                  <tr key={p.codigo} style={{ borderBottom:"1px solid #f0f0f0" }}>
+                    <td style={{ padding:"10px 14px", fontWeight:600, color:"#1A3A6B", cursor:"pointer" }}
+                      onClick={() => setTabActiva(tabActiva === p.codigo ? null : p.codigo)}
+                      onMouseEnter={e => e.currentTarget.style.textDecoration="underline"}
+                      onMouseLeave={e => e.currentTarget.style.textDecoration="none"}>
+                      {p.nombre}
+                    </td>
+                    <td style={{ padding:"10px 14px", color:"#555" }}>{p.decanato || "—"}</td>
+                    <td style={{ padding:"10px 14px", color:"#555" }}>{p.vicaria || "—"}</td>
                     <td style={{ padding:"10px 14px", fontWeight:700 }}>{reg}</td>
-                    <td style={{ padding:"10px 14px", color:"#888" }}>{p.cupo}</td>
-                    <td style={{ padding:"10px 14px", color, fontWeight:600 }}>{p.cupo - reg}</td>
+                    <td style={{ padding:"10px 14px", color:"#888" }}>{cupo}</td>
+                    <td style={{ padding:"10px 14px", color, fontWeight:600 }}>{cupo - reg}</td>
                     <td style={{ padding:"10px 14px" }}>
                       <div style={{ display:"flex", alignItems:"center", gap:8 }}>
                         <div style={{ flex:1, height:8, background:"#eee", borderRadius:4 }}>
@@ -299,25 +342,106 @@ function VistaAdmin({ datos, onLogout }) {
                         <span style={{ color, fontSize:12, fontWeight:700, minWidth:36 }}>{pct}%</span>
                       </div>
                     </td>
+                    <td style={{ padding:"6px 10px", textAlign:"center" }}>
+                      <button
+                        onClick={() => eliminarParroquia(p.codigo, p.nombre)}
+                        title="Eliminar parroquia"
+                        style={{ background:"none", border:"none", cursor:"pointer", color:"#ccc", padding:6, borderRadius:4, display:"flex", alignItems:"center", justifyContent:"center" }}
+                        onMouseEnter={e => { e.currentTarget.style.color="#cc0000"; e.currentTarget.style.background="#fff0f0"; }}
+                        onMouseLeave={e => { e.currentTarget.style.color="#ccc"; e.currentTarget.style.background="none"; }}
+                      >
+                        <IconTrash/>
+                      </button>
+                    </td>
                   </tr>
                 );
               })}
+              {parroquias.length === 0 && (
+                <tr>
+                  <td colSpan={8} style={{ padding:"32px", textAlign:"center", color:"#999", fontStyle:"italic" }}>
+                    No hay parroquias registradas. Haz clic en "+ Nueva parroquia" para comenzar.
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
 
-        {/* Vista expandida */}
+        {/* Vista expandida al hacer clic en parroquia */}
         {tabActiva && (() => {
-          const p = PARROQUIAS_DEMO.find(x => x.codigo === tabActiva);
+          const p = parroquias.find(x => x.codigo === tabActiva);
+          if (!p) return null;
           const filas = datos[tabActiva]?.filas || [];
           return (
             <div style={{ marginTop:16, background:"white", borderRadius:12, padding:20, boxShadow:"0 2px 8px rgba(0,0,0,0.08)" }}>
-              <h4 style={{ margin:"0 0 16px", color:"#1A3A6B" }}>Detalle: {p.nombre}</h4>
+              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
+                <h4 style={{ margin:0, color:"#1A3A6B" }}>Detalle: {p.nombre}</h4>
+                <button onClick={() => setTabActiva(null)} style={{ background:"none", border:"1px solid #ddd", borderRadius:6, padding:"4px 12px", cursor:"pointer", fontSize:12, color:"#666" }}>Cerrar</button>
+              </div>
               <TablaPersonas filas={filas} soloLectura={true} />
             </div>
           );
         })()}
       </div>
+
+      {/* Modal nueva parroquia */}
+      {modalOpen && (
+        <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.5)", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1000, padding:20 }}>
+          <div style={{ background:"white", borderRadius:16, padding:32, width:"100%", maxWidth:480, boxShadow:"0 20px 60px rgba(0,0,0,0.3)" }}>
+            <h3 style={{ margin:"0 0 24px", color:"#1A3A6B", fontFamily:"Georgia, serif", fontSize:20 }}>Nueva parroquia</h3>
+
+            <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+              {[
+                { key:"nombre",      label:"Nombre de la parroquia *", placeholder:"Ej: Sagrado Corazón de Jesús" },
+                { key:"codigo",      label:"Código de acceso *",        placeholder:"Ej: SGDO001", upper:true },
+                { key:"vicaria",     label:"Vicaria",                   placeholder:"Ej: Vicaría Norte" },
+                { key:"decanato",    label:"Decanato",                  placeholder:"Ej: Decanato I" },
+                { key:"cupo_maximo", label:"Cupo máximo",               placeholder:"Ej: 100", type:"number" },
+              ].map(({ key, label, placeholder, upper, type }) => (
+                <div key={key}>
+                  <label style={{ display:"block", fontSize:12, fontWeight:600, color:"#444", marginBottom:5, letterSpacing:0.4 }}>{label.toUpperCase()}</label>
+                  <input
+                    type={type || "text"}
+                    value={form[key]}
+                    onChange={e => setForm(f => ({ ...f, [key]: upper ? e.target.value.toUpperCase() : e.target.value }))}
+                    placeholder={placeholder}
+                    min={type === "number" ? 0 : undefined}
+                    style={{
+                      width:"100%", padding:"10px 14px", fontSize:14, fontFamily:"Inter, sans-serif",
+                      border:"1.5px solid #ddd", borderRadius:7, outline:"none", boxSizing:"border-box",
+                      transition:"border-color 0.2s"
+                    }}
+                    onFocus={e => e.target.style.borderColor="#1A3A6B"}
+                    onBlur={e => e.target.style.borderColor="#ddd"}
+                  />
+                </div>
+              ))}
+            </div>
+
+            {errForm && (
+              <div style={{ marginTop:12, padding:"10px 14px", background:"#fff3f3", border:"1px solid #ffcccc", borderRadius:6, color:"#cc0000", fontSize:13 }}>
+                {errForm}
+              </div>
+            )}
+
+            <div style={{ display:"flex", gap:10, marginTop:24 }}>
+              <button
+                onClick={crearParroquia}
+                disabled={guardando}
+                style={{ flex:1, padding:"12px", background: guardando ? "#9ba8c0" : "#1A3A6B", color:"white", border:"none", borderRadius:8, cursor: guardando ? "not-allowed" : "pointer", fontSize:14, fontWeight:700 }}
+              >
+                {guardando ? "Guardando..." : "Guardar parroquia"}
+              </button>
+              <button
+                onClick={() => { setModalOpen(false); setErrForm(""); }}
+                style={{ flex:1, padding:"12px", background:"white", color:"#555", border:"2px solid #ddd", borderRadius:8, cursor:"pointer", fontSize:14 }}
+              >
+                Cancelar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -344,8 +468,8 @@ function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
   ];
 
   const totalPersonas = filas.reduce((s,f) => s+(parseInt(f.cantidad)||0), 0);
-  const totalH = filas.reduce((s,f) => s+(parseInt(f.h)||0), 0);
-  const totalM = filas.reduce((s,f) => s+(parseInt(f.m)||0), 0);
+  const totalH  = filas.reduce((s,f) => s+(parseInt(f.h)||0),  0);
+  const totalM  = filas.reduce((s,f) => s+(parseInt(f.m)||0),  0);
   const totalMT = filas.reduce((s,f) => s+(parseInt(f.mt)||0), 0);
 
   return (
@@ -377,8 +501,7 @@ function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
                       style={{
                         width:"100%", border:"none", background:"transparent", padding:"5px 4px",
                         fontSize:13, fontFamily:"Inter, sans-serif", outline:"none", boxSizing:"border-box",
-                        color:"#1A3A6B",
-                        borderBottom:"1px solid transparent", transition:"border-color 0.2s"
+                        color:"#1A3A6B", borderBottom:"1px solid transparent", transition:"border-color 0.2s"
                       }}
                       onFocus={e => { e.target.style.background="#f0f4ff"; e.target.style.borderBottomColor="#1A3A6B"; }}
                       onBlur={e => { e.target.style.background="transparent"; e.target.style.borderBottomColor="transparent"; }}
@@ -415,27 +538,23 @@ function TablaPersonas({ filas, onChange, soloLectura, onEliminar }) {
 
 // ─── VISTA PARROQUIA ──────────────────────────────────────────────────────────
 function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
+  const cupo = parroquia.cupo_maximo ?? parroquia.cupo ?? 0;
   const datosP = datos[parroquia.codigo] || { header: {}, filas: Array(20).fill(null).map(fila_vacia) };
   const [header, setHeader] = useState(datosP.header || {});
-  const [filas, setFilas] = useState(datosP.header ? datosP.filas : Array(20).fill(null).map(fila_vacia));
+  const [filas, setFilas]   = useState(datosP.header ? datosP.filas : Array(20).fill(null).map(fila_vacia));
   const [guardado, setGuardado] = useState(false);
-  const [tab, setTab] = useState("registro");
+  const [tab, setTab]           = useState("registro");
 
   const totalPersonas = filas.reduce((s,f) => s+(parseInt(f.cantidad)||0), 0);
-  const totalH = filas.reduce((s,f) => s+(parseInt(f.h)||0), 0);
-  const totalM = filas.reduce((s,f) => s+(parseInt(f.m)||0), 0);
+  const totalH  = filas.reduce((s,f) => s+(parseInt(f.h)||0),  0);
+  const totalM  = filas.reduce((s,f) => s+(parseInt(f.m)||0),  0);
   const totalMT = filas.reduce((s,f) => s+(parseInt(f.mt)||0), 0);
-  const pct = Math.min(100, Math.round((totalPersonas/parroquia.cupo)*100));
+  const pct = cupo > 0 ? Math.min(100, Math.round((totalPersonas/cupo)*100)) : 0;
   const colorPct = pct >= 90 ? "#cc0000" : pct >= 60 ? "#e07b00" : "#2a7a3a";
 
   const handleHeader = (campo, valor) => setHeader(h => ({ ...h, [campo]: valor }));
-
-  const handleFila = (i, campo, valor) => {
-    setFilas(fs => { const n = [...fs]; n[i] = { ...n[i], [campo]: valor }; return n; });
-  };
-
-  const agregarFila = () => setFilas(fs => [...fs, fila_vacia()]);
-
+  const handleFila   = (i, campo, valor) => setFilas(fs => { const n = [...fs]; n[i] = { ...n[i], [campo]: valor }; return n; });
+  const agregarFila  = () => setFilas(fs => [...fs, fila_vacia()]);
   const eliminarFila = (i) => setFilas(fs => fs.filter((_,idx) => idx !== i));
 
   const guardar = async () => {
@@ -454,7 +573,7 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
       if (f.nombre) csv += `${i+1},"${f.nombre}","${f.telefono}","${f.direccion}","${f.cantidad}","${f.h}","${f.m}","${f.mt}"\n`;
     });
     csv += `\nTOTAL,,,,${totalPersonas},${totalH},${totalM},${totalMT}\n`;
-    const blob = new Blob(["\uFEFF"+csv], { type:"text/csv;charset=utf-8;" });
+    const blob = new Blob(["﻿"+csv], { type:"text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a"); a.href=url; a.download=`ENSES_${parroquia.nombre.replace(/\s+/g,"_")}.csv`; a.click();
   };
@@ -495,11 +614,10 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
               </div>
             </div>
             <div style={{ display:"flex", alignItems:"center", gap:10 }}>
-              {/* Indicador de cupo */}
               <div style={{ textAlign:"right", marginRight:8 }}>
                 <div style={{ fontSize:12, opacity:0.7 }}>Cupo utilizado</div>
                 <div style={{ fontSize:18, fontWeight:800, color: pct>=90?"#ff8080":pct>=60?"#ffcc66":"#80ff99" }}>
-                  {totalPersonas} / {parroquia.cupo}
+                  {totalPersonas} / {cupo}
                 </div>
               </div>
               <div style={{ width:48, height:48, borderRadius:"50%", background:"rgba(255,255,255,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, fontWeight:700, color: pct>=90?"#ff8080":pct>=60?"#ffcc66":"#80ff99" }}>
@@ -510,16 +628,13 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
               </button>
             </div>
           </div>
-
-          {/* Barra de progreso */}
-          <div style={{ height:4, background:"rgba(255,255,255,0.15)", borderRadius:2, marginBottom:0 }}>
+          <div style={{ height:4, background:"rgba(255,255,255,0.15)", borderRadius:2 }}>
             <div style={{ width:`${pct}%`, height:"100%", background: pct>=90?"#ff6666":pct>=60?"#ffaa33":"#66cc88", borderRadius:2, transition:"width 0.5s" }}/>
           </div>
         </div>
       </div>
 
       <div style={{ maxWidth:1000, margin:"0 auto", padding:20 }}>
-
         {/* Tabs */}
         <div style={{ display:"flex", gap:8, marginBottom:20 }}>
           {[["registro","📋 Registro de personas"],["datos","🏛️ Datos de la parroquia"]].map(([id,label]) => (
@@ -609,7 +724,6 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
           </div>
         )}
 
-        {/* Footer */}
         <div style={{ marginTop:24, textAlign:"center", fontSize:12, color:"#999", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <LogoRCCES />
           <span>Sistema ENSES 2026 · Diócesis Valle de Chalco · Control de Hospedaje</span>
@@ -623,23 +737,36 @@ function VistaParroquia({ parroquia, datos, setDatos, onLogout }) {
 // ─── APP PRINCIPAL ────────────────────────────────────────────────────────────
 export default function App() {
   const [parroquiaActiva, setParroquiaActiva] = useState(null);
-  const [datos, setDatos] = useState({});
-  const [iniciando, setIniciando] = useState(true);
+  const [parroquias, setParroquias]           = useState([]);
+  const [datos, setDatos]                     = useState({});
+  const [iniciando, setIniciando]             = useState(true);
 
   useEffect(() => {
-    cargarDatos().then(d => {
+    cargarDatos().then(({ datos: d, parroquias: p }) => {
       setDatos(d);
+      setParroquias(p);
       setIniciando(false);
     });
 
-    const channel = supabase
+    const actualizarTodo = () => cargarDatos().then(({ datos: d, parroquias: p }) => {
+      setDatos(d);
+      setParroquias(p);
+    });
+
+    const ch1 = supabase
       .channel("personas-realtime")
-      .on("postgres_changes", { event: "*", schema: "public", table: "personas" }, () => {
-        cargarDatos().then(setDatos);
-      })
+      .on("postgres_changes", { event: "*", schema: "public", table: "personas" }, actualizarTodo)
       .subscribe();
 
-    return () => supabase.removeChannel(channel);
+    const ch2 = supabase
+      .channel("parroquias-realtime")
+      .on("postgres_changes", { event: "*", schema: "public", table: "parroquias" }, actualizarTodo)
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(ch1);
+      supabase.removeChannel(ch2);
+    };
   }, []);
 
   if (iniciando) return (
@@ -662,7 +789,7 @@ export default function App() {
   return parroquiaActiva === null
     ? <PantallaLogin onLogin={setParroquiaActiva} />
     : parroquiaActiva.esAdmin
-      ? <VistaAdmin datos={datos} onLogout={() => setParroquiaActiva(null)} />
+      ? <VistaAdmin parroquias={parroquias} datos={datos} onLogout={() => setParroquiaActiva(null)} />
       : <VistaParroquia
           parroquia={parroquiaActiva}
           datos={datos}
