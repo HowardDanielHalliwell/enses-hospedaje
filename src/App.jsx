@@ -300,13 +300,8 @@ function PantallaLogin({ onLogin }) {
       // Cada 30s consulta Supabase para ver si admin desbloqueó
       if (Date.now() - lastCheck > 30000) {
         lastCheck = Date.now();
-        const { data: rows } = await supabase
-          .from("bloqueos")
-          .select("desbloqueado_por")
-          .eq("navegador_id", navId)
-          .order("created_at", { ascending: false })
-          .limit(1);
-        if (rows?.[0]?.desbloqueado_por) {
+        const { data } = await supabase.from("bloqueos").select("desbloqueado_por").eq("navegador_id", navId).maybeSingle();
+        if (data?.desbloqueado_por) {
           localStorage.removeItem(BLOQUEO_KEY);
           setBloqueoLocalState(null);
         }
@@ -323,31 +318,24 @@ function PantallaLogin({ onLogin }) {
     const intentos = (anterior?.intentos || 0) + 1;
     const bloqueadoHasta = intentos >= MAX_INTENTOS ? new Date(Date.now() + BLOQUEO_MS).toISOString() : null;
     const nuevo = { intentos, bloqueadoHasta };
-
     localStorage.setItem(BLOQUEO_KEY, JSON.stringify(nuevo));
     setBloqueoLocalState(nuevo);
     if (bloqueadoHasta) setTiempoRestante(Math.ceil(BLOQUEO_MS / 1000));
-
     const payload = {
       navegador_id: navId,
       intentos,
       bloqueado_hasta: bloqueadoHasta,
-      // Al bloquear, resetea cualquier desbloqueo previo del admin para este dispositivo
       ...(bloqueadoHasta ? { desbloqueado_por: null } : {}),
     };
-
     if (bloqueadoHasta) {
-      // Intento bloqueante: awaiteado para que el admin lo vea de inmediato
       await supabase.from("bloqueos")
         .upsert(payload, { onConflict: "navegador_id" })
         .catch(() => {});
     } else {
-      // Intentos previos: best effort, no bloquea el flujo de UI
       supabase.from("bloqueos")
         .upsert(payload, { onConflict: "navegador_id" })
         .catch(() => {});
     }
-
     return intentos >= MAX_INTENTOS;
   };
 
