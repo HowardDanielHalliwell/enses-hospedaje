@@ -347,7 +347,7 @@ function PantallaLogin({ onLogin }) {
     try {
       // Coordinador: COORD-XXXX — validar contra tabla coordinadores en Supabase
       if (code.startsWith("COORD-")) {
-        const { data: coord } = await supabase.from("coordinadores").select("*").eq("codigo", code).single();
+        const { data: coord } = await supabase.from("coordinadores").select("*").eq("codigo", code).maybeSingle();
         if (coord) {
           localStorage.removeItem(BLOQUEO_KEY); setBloqueoLocalState(null);
           onLogin({ codigo: coord.codigo, codigoReal: coord.codigo, codigoHeader: coord.codigo, nombre: coord.nombre || `Coordinador ${code.slice(6)}`, esAdmin: false, esCoordinador: true, soloLectura: false, cupo_maximo: 0 });
