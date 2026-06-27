@@ -334,45 +334,50 @@ function PantallaLogin({ onLogin }) {
     if (!code || bloqueoLocal?.bloqueadoHasta) return;
     setError(""); setCargando(true);
 
-    // Coordinador: COORD-XXXX — validar contra tabla coordinadores en Supabase
-    if (code.startsWith("COORD-")) {
-      const { data: coord } = await supabase.from("coordinadores").select("*").eq("codigo", code).single();
-      if (coord) {
+    try {
+      // Coordinador: COORD-XXXX — validar contra tabla coordinadores en Supabase
+      if (code.startsWith("COORD-")) {
+        const { data: coord } = await supabase.from("coordinadores").select("*").eq("codigo", code).single();
+        if (coord) {
+          localStorage.removeItem(BLOQUEO_KEY); setBloqueoLocalState(null);
+          onLogin({ codigo: coord.codigo, codigoReal: coord.codigo, codigoHeader: coord.codigo, nombre: coord.nombre || `Coordinador ${code.slice(6)}`, esAdmin: false, esCoordinador: true, soloLectura: false, cupo_maximo: 0 });
+        } else {
+          await registrarIntentoFallido();
+          setError("Código de coordinador no válido. Verifica con el administrador.");
+        }
+        return;
+      }
+
+      // Acceso de solo lectura: VER-XXXX
+      const esVistaLectura = code.startsWith("VER-");
+      const codigoReal = esVistaLectura ? code.slice(4) : code;
+
+      if (codigoReal === ADMIN_CODIGO) {
         localStorage.removeItem(BLOQUEO_KEY); setBloqueoLocalState(null);
-        onLogin({ codigo: coord.codigo, codigoReal: coord.codigo, codigoHeader: coord.codigo, nombre: coord.nombre || `Coordinador ${code.slice(6)}`, esAdmin: false, esCoordinador: true, soloLectura: false, cupo_maximo: 0 });
+        onLogin({ codigo: ADMIN_CODIGO, codigoReal: ADMIN_CODIGO, codigoHeader: ADMIN_CODIGO, nombre: "ADMINISTRADOR GENERAL", esAdmin: true, soloLectura: false, cupo_maximo: 9999 });
+        return;
+      }
+
+      const { data } = await supabase.from("parroquias").select("*").eq("codigo", codigoReal).single();
+      if (data) {
+        localStorage.removeItem(BLOQUEO_KEY); setBloqueoLocalState(null);
+        onLogin({ ...data, codigoReal, codigoHeader: codigoReal, esAdmin: false, soloLectura: esVistaLectura });
       } else {
         await registrarIntentoFallido();
-        setError("Código de coordinador no válido. Verifica con el administrador.");
+        const restantes = Math.max(0, MAX_INTENTOS - ((getBloqueoLocal()?.intentos) || 0));
+        setError(
+          esVistaLectura
+            ? `No existe la parroquia "${codigoReal}".`
+            : restantes > 0
+              ? `Código incorrecto. ${restantes} intento${restantes > 1 ? "s" : ""} restante${restantes > 1 ? "s" : ""}.`
+              : "Demasiados intentos. Acceso bloqueado por 15 minutos."
+        );
       }
-      setCargando(false); return;
+    } catch {
+      setError("Error de conexión. Intenta de nuevo.");
+    } finally {
+      setCargando(false);
     }
-
-    // Acceso de solo lectura: VER-XXXX
-    const esVistaLectura = code.startsWith("VER-");
-    const codigoReal = esVistaLectura ? code.slice(4) : code;
-
-    if (codigoReal === ADMIN_CODIGO) {
-      localStorage.removeItem(BLOQUEO_KEY); setBloqueoLocalState(null);
-      onLogin({ codigo: ADMIN_CODIGO, codigoReal: ADMIN_CODIGO, codigoHeader: ADMIN_CODIGO, nombre: "ADMINISTRADOR GENERAL", esAdmin: true, soloLectura: false, cupo_maximo: 9999 });
-      setCargando(false); return;
-    }
-
-    const { data } = await supabase.from("parroquias").select("*").eq("codigo", codigoReal).single();
-    if (data) {
-      localStorage.removeItem(BLOQUEO_KEY); setBloqueoLocalState(null);
-      onLogin({ ...data, codigoReal, codigoHeader: codigoReal, esAdmin: false, soloLectura: esVistaLectura });
-    } else {
-      await registrarIntentoFallido();
-      const restantes = Math.max(0, MAX_INTENTOS - ((getBloqueoLocal()?.intentos) || 0));
-      setError(
-        esVistaLectura
-          ? `No existe la parroquia "${codigoReal}".`
-          : restantes > 0
-            ? `Código incorrecto. ${restantes} intento${restantes > 1 ? "s" : ""} restante${restantes > 1 ? "s" : ""}.`
-            : "Demasiados intentos. Acceso bloqueado por 15 minutos."
-      );
-    }
-    setCargando(false);
   };
 
   // ── UI bloqueado ─────────────────────────────────────────────────────────
@@ -421,7 +426,7 @@ function PantallaLogin({ onLogin }) {
           <input
             value={codigo}
             onChange={e => setCodigo(e.target.value.toUpperCase())}
-            onKeyDown={e => e.key === "Enter" && handleLogin()}
+            onKeyDown={e => e.key === "Enter" && !cargando && handleLogin()}
             placeholder="Ej: SGDO001 · VER-SGDO001 · COORD-NORTE"
             style={{ width:"100%", padding:"12px 16px", fontSize:14, fontFamily:"monospace", border:"2px solid #ddd", borderRadius:8, outline:"none", letterSpacing:2, textAlign:"center", boxSizing:"border-box", transition:"border-color 0.2s" }}
             onFocus={e => e.target.style.borderColor="#1A3A6B"}
